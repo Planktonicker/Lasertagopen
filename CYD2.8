@@ -1,0 +1,649 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+#include <XPT2046_Touchscreen.h>
+
+// =========================================================================
+// CYD 2.8" HARDWARE CONFIGURATION (DUAL SPI)
+// =========================================================================
+// Touchscreen Pins (VSPI)
+#define XPT2046_IRQ  36
+#define XPT2046_MOSI 32
+#define XPT2046_MISO 39
+#define XPT2046_CLK  25
+#define XPT2046_CS   33
+
+// TFT Screen Pins (HSPI)
+#define TFT_MISO 12
+#define TFT_MOSI 13
+#define TFT_CLK  14
+#define TFT_CS   15
+#define TFT_DC   2
+#define TFT_RST  -1
+#define TFT_BL   21 
+
+XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
+SPIClass tftSpi = SPIClass(HSPI);
+Adafruit_ILI9341 tft = Adafruit_ILI9341(&tftSpi, TFT_DC, TFT_CS, TFT_RST);
+
+// =========================================================================
+// NETWORK & SERVER VARIABLES
+// =========================================================================
+WebServer server(80);
+DNSServer dnsServer; 
+const byte DNS_PORT = 53;
+
+const char* apSSID       = "LaserTag_Hub";
+const char* apPass       = "pewpewpew";
+const char* routerSSID   = "LaserArena";
+const char* routerPass   = "pewpewpew";
+const char* customDomain = "lasertagarena.game"; 
+bool usingExternalRouter = false; 
+
+// =========================================================================
+// GAME STATE & PLAYER TRACKING
+// =========================================================================
+int hostStatus   = 0;  // 0=Lobby, 1=Running, 2=Kill All
+int baseDamage   = 50; 
+int configLives  = 3;
+int configMags   = 5;
+int configHealth = 100;
+int gameMode     = 0;  // 0=Combat, 1=Unlimited
+
+#define MAX_PLAYERS 64
+
+struct PlayerRecord {
+  int id;
+  int team; // 1=Red, 2=Blue, 3=Green, 4=Yellow
+  int kills;
+  int deaths;
+  bool active;
+};
+
+PlayerRecord players[MAX_PLAYERS]; 
+int playerCount = 0;
+
+// =========================================================================
+// UI & DISPLAY STATE
+// =========================================================================
+int currentScreen = 0; // 0=Main, 1=Setup1, 2=Setup2, 3=Roster
+unsigned long gameStartTime = 0;
+unsigned long lastTimerUpdate = 0;
+bool forceRedraw = true;
+
+// TFT Color Theme
+#define C_BG      tft.color565(5, 5, 15)    
+#define C_GREEN   tft.color565(0, 255, 100) 
+#define C_RED     tft.color565(255, 50, 100) 
+#define C_BLUE    tft.color565(0, 255, 255) 
+#define C_YELLOW  tft.color565(255, 200, 0) 
+#define C_GREY    tft.color565(100, 100, 120)
+#define C_WHITE   0xFFFF
+#define C_BLACK   0x0000
+
+// Forward Declarations
+void drawMainScreen();
+void drawSetupScreen1();
+void drawSetupScreen2();
+void drawRosterScreen();
+
+PlayerRecord* getPlayer(int id) {
+  if (id <= 0) return nullptr;
+  for(int i = 0; i < MAX_PLAYERS; i++) {
+    if(players[i].active && players[i].id == id) return &players[i];
+  }
+  for(int i = 0; i < MAX_PLAYERS; i++) {
+    if(!players[i].active) {
+      players[i].id = id;
+      players[i].team = 1; 
+      players[i].kills = 0;
+      players[i].deaths = 0;
+      players[i].active = true;
+      playerCount++;
+      return &players[i];
+    }
+  }
+  return nullptr;
+}
+
+// =========================================================================
+// WEB SERVER ENDPOINTS (MOBILE DASHBOARD)
+// =========================================================================
+
+void handleRoot() {
+  int teamKills[5] = {0, 0, 0, 0, 0};
+  bool teamActive[5] = {false, false, false, false, false};
+  
+  for(int i = 0; i < MAX_PLAYERS; i++) {
+    if(players[i].active) {
+      teamKills[players[i].team] += players[i].kills;
+      teamActive[players[i].team] = true;
+    }
+  }
+
+  String html = "<!DOCTYPE html><html><head><title>Arena Command</title>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'>";
+  
+  html += "<style>";
+  html += "* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }";
+  html += "body { font-family: -apple-system, system-ui, sans-serif; background: #050510; color: #0ff; margin: 0; padding: env(safe-area-inset-top) 15px 40px 15px; }";
+  html += ".card { background: rgba(0, 255, 255, 0.08); padding: 20px; border: 1px solid #0ff; border-radius: 20px; margin-bottom: 20px; box-shadow: 0 10px 40px rgba(0,0,0,0.7); }";
+  html += "h1 { font-size: 26px; text-align: center; color: #fff; text-shadow: 0 0 15px #0ff; margin: 25px 0; letter-spacing: 1px; }";
+  html += "h2 { font-size: 13px; margin-top: 0; border-bottom: 1px solid rgba(0, 255, 255, 0.2); padding-bottom: 12px; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 2px; color: rgba(255,255,255,0.7); }";
+  html += "button { width: 100%; padding: 22px; margin-bottom: 15px; background: #001a1a; border: 2px solid #0ff; color: #0ff; border-radius: 14px; font-weight: bold; font-size: 18px; transition: 0.1s; }";
+  html += ".btn-red { border-color: #f0f; color: #f0f; background: #1a001a; }";
+  html += ".btn-green { border-color: #0f0; color: #0f0; background: #001a00; }";
+  html += ".grid { display: flex; flex-wrap: wrap; gap: 15px; }";
+  html += ".grid > div { flex: 1 1 calc(50% - 15px); min-width: 130px; }";
+  html += ".score-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }";
+  html += "label { font-size: 10px; display: block; margin-bottom: 8px; color: #fff; opacity: 0.8; font-weight: 800; letter-spacing: 1px; }";
+  html += "input, select { width: 100%; padding: 16px; background: #000; color: #fff; border: 1px solid #0ff; border-radius: 12px; font-size: 18px; outline: none; -webkit-appearance: none; }";
+  html += "table { width: 100%; text-align: center; border-collapse: collapse; margin-top: 10px; }";
+  html += "th, td { padding: 12px 5px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); font-size: 15px; }";
+  html += "th { font-size: 10px; opacity: 0.5; color: #fff; }";
+  html += "</style>";
+  
+  html += "<script>setInterval(function(){ location.reload(); }, 12000);</script>";
+  html += "</head><body>";
+  
+  html += "<h1>ARENA COMMAND ";
+  html += usingExternalRouter ? "<span style='color:#0f0; font-size:18px;'>[LA ROUTER]</span>" : "<span style='color:#ff0; font-size:18px;'>[LAH HUB]</span>";
+  html += "</h1>";
+  
+  html += "<div class='card'><h2>SYSTEM STATUS: ";
+  if (hostStatus == 0) html += "<span style='color:#ff0'>LOBBY</span></h2>";
+  else if (hostStatus == 1) html += "<span style='color:#0f0'>ACTIVE</span></h2>";
+  else html += "<span style='color:#f0f'>OVERRIDE</span></h2>";
+  
+  html += "<form action='/set'>";
+  if (hostStatus == 0) html += "<button name='cmd' value='start' class='btn-green'>START MISSION</button>";
+  else html += "<button name='cmd' value='lobby'>RETURN LOBBY</button>";
+  html += "<button name='cmd' value='kill' class='btn-red' style='border-style:dashed; margin-top:10px;'>EMERGENCY KILL ALL</button>";
+  html += "</form></div>";
+  
+  html += "<div class='card'><h2>TEAM STANDINGS</h2>";
+  if (playerCount == 0) {
+    html += "<div style='padding:40px; text-align:center; opacity:0.3;'>NO OPERATORS DETECTED</div>";
+  } else {
+    html += "<div class='score-grid'>";
+    for(int t = 1; t <= 4; t++) {
+      if(!teamActive[t]) continue;
+      String tName = "UNKNOWN"; String tCol = "#fff"; String bgCol = "rgba(255,255,255,0.05)";
+      if (t == 1) { tName = "RED TEAM"; tCol = "#ff3366"; bgCol = "rgba(255,51,102,0.1)"; }
+      else if (t == 2) { tName = "BLUE TEAM"; tCol = "#00ffff"; bgCol = "rgba(0,255,255,0.1)"; }
+      else if (t == 3) { tName = "GREEN TEAM"; tCol = "#00ff88"; bgCol = "rgba(0,255,136,0.1)"; }
+      else if (t == 4) { tName = "YELLOW TEAM"; tCol = "#ffcc00"; bgCol = "rgba(255,204,0,0.1)"; }
+
+      html += "<div style='background:" + bgCol + "; border-left: 4px solid " + tCol + "; padding: 15px; border-radius: 8px;'>";
+      html += "<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;'>";
+      html += "<span style='color:" + tCol + "; font-weight:bold; font-size:18px;'>" + tName + "</span>";
+      html += "<span style='color:#fff; font-size:22px; font-weight:bold;'>" + String(teamKills[t]) + " KILLS</span></div>";
+      html += "<table><tr><th>GUN</th><th>K</th><th>D</th><th>K/D</th></tr>";
+      for(int i = 0; i < MAX_PLAYERS; i++) {
+        if(players[i].active && players[i].team == t) {
+          float kd = players[i].deaths == 0 ? (float)players[i].kills : (float)players[i].kills / players[i].deaths;
+          html += "<tr><td style='color:#fff; font-weight:bold;'>#" + String(players[i].id) + "</td>";
+          html += "<td>" + String(players[i].kills) + "</td>";
+          html += "<td>" + String(players[i].deaths) + "</td>";
+          html += "<td>" + String(kd, 1) + "</td></tr>";
+        }
+      }
+      html += "</table></div>";
+    }
+    html += "</div>";
+  }
+  html += "<form action='/clearscores'><button class='btn-red' style='margin-top:20px; padding:12px; font-size:12px; width:auto;'>RESET SCOREBOARD</button></form></div>";
+  
+  html += "<div class='card'><h2>DIRECTIVES</h2><form action='/setrules'><div class='grid'>";
+  html += "<div><label>MODE</label><select name='mode'><option value='0' "+String(gameMode==0?"selected":"")+">Combat</option><option value='1' "+String(gameMode==1?"selected":"")+">Unlimited</option></select></div>";
+  html += "<div><label>HEALTH (HP)</label><input type='number' name='hp' value='"+String(configHealth)+"'></div>";
+  html += "<div><label>DAMAGE</label><input type='number' name='dmg' value='"+String(baseDamage)+"'></div>";
+  html += "<div><label>LIVES</label><input type='number' name='lvs' value='"+String(configLives)+"'></div>";
+  html += "</div><button type='submit' style='margin-top:25px; background:#0ff; color:#000;'>SYNC DIRECTIVES</button></form></div></body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+void handleJoin() {
+  if (server.hasArg("id")) {
+    int prevCount = playerCount;
+    PlayerRecord* p = getPlayer(server.arg("id").toInt());
+    
+    // NOTE: If the CYD assigned a team manually via the Roster screen, 
+    // we ignore the gun's team. If not, we take the gun's team.
+    if (p && server.hasArg("team")) {
+      // Only set it if the gun is joining for the very first time
+      if (prevCount < playerCount) {
+        p->team = server.arg("team").toInt();
+      }
+      forceRedraw = true;
+    }
+  }
+  server.send(200, "text/plain", "OK");
+}
+
+void handleStatus() {
+  String assignedTeam = "0";
+  if (server.hasArg("id")) {
+    PlayerRecord* p = getPlayer(server.arg("id").toInt());
+    if (p) assignedTeam = String(p->team); // Tell the gun its official team!
+  }
+  
+  // Appended assignedTeam to the payload so the Gun knows if we forced a team change
+  String payload = String(hostStatus) + "," + String(baseDamage) + "," + String(configLives) + "," + String(configMags) + "," + String(configHealth) + "," + String(gameMode) + "," + assignedTeam;
+  server.send(200, "text/plain", payload);
+}
+
+void handleSet() {
+  if (server.hasArg("cmd")) {
+    String cmd = server.arg("cmd");
+    if (cmd == "start") { hostStatus = 1; gameStartTime = millis(); }
+    else if (cmd == "lobby") hostStatus = 0;
+    else if (cmd == "kill") hostStatus = 2;
+  }
+  forceRedraw = true;
+  server.sendHeader("Location", "/");
+  server.send(303);
+  if(currentScreen == 0) drawMainScreen();
+}
+
+void handleSetRules() {
+  if (server.hasArg("hp")) configHealth = server.arg("hp").toInt();
+  if (server.hasArg("dmg")) baseDamage = server.arg("dmg").toInt();
+  if (server.hasArg("lvs")) configLives = server.arg("lvs").toInt();
+  if (server.hasArg("mags")) configMags = server.arg("mags").toInt();
+  if (server.hasArg("mode")) gameMode = server.arg("mode").toInt();
+  forceRedraw = true;
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleHit() {
+  if (server.hasArg("isDeath") && server.arg("isDeath") == "1") {
+    if (server.hasArg("shooterID")) {
+      PlayerRecord* s = getPlayer(server.arg("shooterID").toInt());
+      if(s) s->kills++;
+    }
+    if (server.hasArg("victimID")) {
+      PlayerRecord* v = getPlayer(server.arg("victimID").toInt());
+      if(v) v->deaths++;
+    }
+  }
+  forceRedraw = true;
+  server.send(200, "text/plain", "OK");
+  if(currentScreen == 3) drawRosterScreen(); // Live update roster if looking at it
+}
+
+void handleClearScores() {
+  for(int i = 0; i < MAX_PLAYERS; i++) players[i].active = false;
+  playerCount = 0;
+  forceRedraw = true;
+  server.sendHeader("Location", "/");
+  server.send(303);
+  if(currentScreen == 3) drawRosterScreen();
+}
+
+// =========================================================================
+// CYD TFT DISPLAY ROUTINES
+// =========================================================================
+
+void drawButton(int x, int y, int w, int h, uint16_t color, const char* text, bool isSelected = false) {
+  if (isSelected) {
+    tft.fillRoundRect(x, y, w, h, 4, C_WHITE);
+    tft.drawRoundRect(x, y, w, h, 4, C_BLUE);
+    tft.setTextColor(C_BLACK);
+  } else {
+    tft.fillRoundRect(x, y, w, h, 4, color);
+    tft.setTextColor(color == C_YELLOW || color == C_GREEN ? C_BLACK : C_WHITE);
+  }
+  
+  tft.setTextSize(2);
+  int textWidth = strlen(text) * 12; // Approximation for size 2 font
+  int textHeight = 16;               
+  tft.setCursor(x + (w - textWidth) / 2, y + (h - textHeight) / 2);
+  tft.print(text);
+}
+
+void drawHeader(const char* title) {
+  tft.fillRect(0, 0, 320, 30, tft.color565(20, 20, 30));
+  tft.drawLine(0, 30, 320, 30, C_BLUE);
+  tft.setTextColor(C_BLUE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 8);
+  tft.print(title);
+  
+  // Network Indicator
+  tft.setCursor(260, 8);
+  tft.setTextColor(usingExternalRouter ? C_GREEN : C_YELLOW);
+  tft.print(usingExternalRouter ? "[LA]" : "[LAH]");
+}
+
+void drawMainScreen() {
+  tft.fillScreen(C_BG);
+  drawHeader("ARENA COMMAND");
+  
+  // Timer Box
+  tft.fillRoundRect(60, 40, 200, 60, 5, tft.color565(30, 30, 40));
+  tft.drawRoundRect(60, 40, 200, 60, 5, C_BLUE);
+  tft.setTextColor(C_BLUE);
+  tft.setTextSize(5);
+  
+  if (hostStatus == 1 && gameStartTime > 0) {
+    unsigned long el = (millis() - gameStartTime) / 1000;
+    char buf[10]; sprintf(buf, "%d:%02d", (int)(el/60), (int)(el%60));
+    tft.setCursor(95, 50); tft.print(buf);
+  } else {
+    tft.setCursor(95, 50); tft.print("0:00");
+  }
+
+  // Left Column - Game Control
+  drawButton(10, 115, 140, 50, C_GREEN, "START GAME", hostStatus == 1);
+  drawButton(10, 175, 140, 50, C_RED, "KILL ALL", hostStatus == 2); 
+  
+  // Right Column - Setup & Teams
+  drawButton(170, 115, 140, 50, C_YELLOW, "RULES...");
+  drawButton(170, 175, 140, 50, C_BLUE, "ROSTER..."); 
+}
+
+void drawSetupScreen1() {
+  tft.fillScreen(C_BG);
+  drawHeader("RULES: MODE/AMMO");
+
+  drawButton(240, 35, 70, 30, C_GREY, "Back");
+  drawButton(240, 70, 70, 30, C_BLUE, "Next");
+
+  tft.setTextSize(1);
+  tft.setTextColor(C_YELLOW);
+  
+  tft.setCursor(10, 40); tft.print("Game Mode");
+  drawButton(10, 55, 100, 30, C_GREEN, "Unlim", gameMode == 1);
+  drawButton(120, 55, 90, 30, C_BLUE, "Combat", gameMode == 0);
+
+  tft.setCursor(10, 100); tft.print("Starting Lives");
+  drawButton(10, 115, 50, 35, C_YELLOW, "1", configLives == 1);
+  drawButton(70, 115, 50, 35, C_YELLOW, "3", configLives == 3);
+  drawButton(130, 115, 50, 35, C_YELLOW, "5", configLives == 5);
+  drawButton(190, 115, 50, 35, C_YELLOW, "10", configLives == 10);
+
+  tft.setCursor(10, 170); tft.print("Magazines (x7 shots)");
+  drawButton(10, 185, 50, 35, C_YELLOW, "2", configMags == 2);
+  drawButton(70, 185, 50, 35, C_YELLOW, "5", configMags == 5);
+  drawButton(130, 185, 50, 35, C_YELLOW, "10", configMags == 10);
+  drawButton(190, 185, 50, 35, C_YELLOW, "30", configMags == 30);
+}
+
+void drawSetupScreen2() {
+  tft.fillScreen(C_BG);
+  drawHeader("RULES: DAMAGE/HP");
+
+  drawButton(240, 35, 70, 30, C_GREY, "Back");
+
+  tft.setTextSize(1);
+  tft.setTextColor(C_YELLOW);
+  
+  tft.setCursor(10, 45); tft.print("Base Damage per Shot");
+  drawButton(10, 60, 50, 40, C_RED, "10", baseDamage == 10);
+  drawButton(70, 60, 50, 40, C_RED, "25", baseDamage == 25);
+  drawButton(130, 60, 50, 40, C_RED, "50", baseDamage == 50);
+  drawButton(190, 60, 50, 40, C_RED, "100", baseDamage == 100);
+
+  tft.setTextColor(C_GREEN);
+  tft.setCursor(10, 125); tft.print("Starting Health (HP)");
+  drawButton(10, 140, 50, 40, C_GREEN, "50", configHealth == 50);
+  drawButton(70, 140, 50, 40, C_GREEN, "100", configHealth == 100);
+  drawButton(130, 140, 50, 40, C_GREEN, "150", configHealth == 150);
+  drawButton(190, 140, 50, 40, C_GREEN, "200", configHealth == 200);
+}
+
+// --- NEW SCREEN: PLAYER ROSTER & TEAM ASSIGNMENT ---
+void drawRosterScreen() {
+  tft.fillScreen(C_BG);
+  drawHeader("ROSTER (TAP TO SWAP)");
+  drawButton(240, 35, 70, 30, C_GREY, "Back");
+  drawButton(240, 70, 70, 30, C_RED, "Wipe");
+
+  int startX = 10;
+  int startY = 40;
+  int boxW = 65;
+  int boxH = 40;
+  int padding = 10;
+  
+  int count = 0;
+  
+  // Draw up to 12 player boxes on screen
+  for(int i = 0; i < MAX_PLAYERS; i++) {
+    if(players[i].active) {
+      if (count >= 12) break; // Out of physical screen space
+      
+      int row = count / 3;
+      int col = count % 3;
+      int bx = startX + (col * (boxW + padding));
+      int by = startY + (row * (boxH + padding));
+      
+      uint16_t tCol = C_WHITE;
+      if (players[i].team == 1) tCol = C_RED;
+      else if (players[i].team == 2) tCol = C_BLUE;
+      else if (players[i].team == 3) tCol = C_GREEN;
+      else if (players[i].team == 4) tCol = C_YELLOW;
+
+      tft.fillRoundRect(bx, by, boxW, boxH, 4, tft.color565(30, 30, 40));
+      tft.drawRoundRect(bx, by, boxW, boxH, 4, tCol);
+      
+      tft.setTextColor(C_WHITE);
+      tft.setTextSize(1);
+      tft.setCursor(bx + 5, by + 5);
+      tft.print("GUN "); tft.print(players[i].id);
+      
+      tft.setTextColor(tCol);
+      tft.setTextSize(2);
+      tft.setCursor(bx + 25, by + 20);
+      if(players[i].team == 1) tft.print("R");
+      else if(players[i].team == 2) tft.print("B");
+      else if(players[i].team == 3) tft.print("G");
+      else if(players[i].team == 4) tft.print("Y");
+
+      count++;
+    }
+  }
+  
+  if (count == 0) {
+    tft.setTextColor(C_GREY);
+    tft.setTextSize(2);
+    tft.setCursor(30, 120);
+    tft.print("No Operators Online");
+  }
+}
+
+// =========================================================================
+// SMART NETWORK ROUTINE
+// =========================================================================
+
+void connectToNetwork() {
+  tft.fillScreen(C_BG);
+  tft.setTextColor(C_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 100); tft.print("SEARCHING FOR");
+  tft.setCursor(10, 130); tft.print("ARENA ROUTER...");
+
+  WiFi.mode(WIFI_STA);
+  IPAddress local_IP(192, 168, 1, 100);
+  IPAddress gateway(192, 168, 1, 1);
+  IPAddress subnet(255, 255, 255, 0);
+  WiFi.config(local_IP, gateway, subnet);
+  WiFi.begin(routerSSID, routerPass);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) { 
+    delay(500);
+    attempts++;
+  }
+
+  tft.fillScreen(C_BG);
+  if (WiFi.status() == WL_CONNECTED) {
+    usingExternalRouter = true;
+    tft.setTextColor(C_GREEN);
+    tft.setCursor(10, 100); tft.print("ROUTER FOUND!");
+    tft.setCursor(10, 130); tft.print("IP: 192.168.1.100");
+    dnsServer.start(DNS_PORT, customDomain, WiFi.localIP());
+  } else {
+    usingExternalRouter = false;
+    tft.setTextColor(C_YELLOW);
+    tft.setCursor(10, 100); tft.print("ROUTER NOT FOUND");
+    tft.setCursor(10, 130); tft.print("STARTING CYD HUB");
+    WiFi.disconnect();
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(apSSID, apPass);
+    dnsServer.start(DNS_PORT, customDomain, WiFi.softAPIP());
+  }
+  delay(2000); 
+}
+
+// =========================================================================
+// MAIN SETUP
+// =========================================================================
+
+void setup() {
+  Serial.begin(115200);
+
+  // Turn on TFT Backlight
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+
+  // Init Touch (VSPI)
+  SPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  ts.begin();
+  ts.setRotation(1); 
+
+  // Init TFT (HSPI)
+  tftSpi.begin(TFT_CLK, TFT_MISO, TFT_MOSI, TFT_CS);
+  tft.begin();
+  tft.setRotation(1); 
+  
+  for(int i = 0; i < MAX_PLAYERS; i++) players[i].active = false;
+  
+  connectToNetwork();
+  
+  server.on("/", handleRoot);
+  server.on("/join", handleJoin);
+  server.on("/status", handleStatus);
+  server.on("/set", handleSet);
+  server.on("/setrules", handleSetRules);
+  server.on("/hit", handleHit);
+  server.on("/clearscores", handleClearScores);
+  
+  server.onNotFound([]() {
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "");
+  });
+
+  server.begin();
+  drawMainScreen();
+}
+
+// =========================================================================
+// TOUCH HANDLING & MAIN LOOP
+// =========================================================================
+
+bool checkTouchArea(int tx, int ty, int bx, int by, int bw, int bh) {
+  return (tx >= bx && tx <= bx + bw && ty >= by && ty <= by + bh);
+}
+
+void processTouch(int tx, int ty) {
+  if (currentScreen == 0) { // MAIN
+    if (checkTouchArea(tx, ty, 10, 115, 140, 50)) { hostStatus = 1; gameStartTime = millis(); drawMainScreen(); } 
+    else if (checkTouchArea(tx, ty, 10, 175, 140, 50)) { hostStatus = 2; drawMainScreen(); } 
+    else if (checkTouchArea(tx, ty, 170, 115, 140, 50)) { currentScreen = 1; drawSetupScreen1(); }
+    else if (checkTouchArea(tx, ty, 170, 175, 140, 50)) { currentScreen = 3; drawRosterScreen(); }
+  } 
+  else if (currentScreen == 1) { // SETUP 1
+    if (checkTouchArea(tx, ty, 240, 35, 70, 30)) { currentScreen = 0; drawMainScreen(); return; } 
+    if (checkTouchArea(tx, ty, 240, 70, 70, 30)) { currentScreen = 2; drawSetupScreen2(); return; } 
+    
+    bool updated = false;
+    if (checkTouchArea(tx, ty, 10, 55, 100, 30)) { gameMode = 1; updated = true; }
+    if (checkTouchArea(tx, ty, 120, 55, 90, 30)) { gameMode = 0; updated = true; }
+
+    if (checkTouchArea(tx, ty, 10, 115, 50, 35)) { configLives = 1; updated = true; }
+    if (checkTouchArea(tx, ty, 70, 115, 50, 35)) { configLives = 3; updated = true; }
+    if (checkTouchArea(tx, ty, 130, 115, 50, 35)) { configLives = 5; updated = true; }
+    if (checkTouchArea(tx, ty, 190, 115, 50, 35)) { configLives = 10; updated = true; }
+
+    if (checkTouchArea(tx, ty, 10, 185, 50, 35)) { configMags = 2; updated = true; }
+    if (checkTouchArea(tx, ty, 70, 185, 50, 35)) { configMags = 5; updated = true; }
+    if (checkTouchArea(tx, ty, 130, 185, 50, 35)) { configMags = 10; updated = true; }
+    if (checkTouchArea(tx, ty, 190, 185, 50, 35)) { configMags = 30; updated = true; }
+    if (updated) drawSetupScreen1(); 
+  }
+  else if (currentScreen == 2) { // SETUP 2
+    if (checkTouchArea(tx, ty, 240, 35, 70, 30)) { currentScreen = 1; drawSetupScreen1(); return; } 
+
+    bool updated = false;
+    if (checkTouchArea(tx, ty, 10, 60, 50, 40)) { baseDamage = 10; updated = true; }
+    if (checkTouchArea(tx, ty, 70, 60, 50, 40)) { baseDamage = 25; updated = true; }
+    if (checkTouchArea(tx, ty, 130, 60, 50, 40)) { baseDamage = 50; updated = true; }
+    if (checkTouchArea(tx, ty, 190, 60, 50, 40)) { baseDamage = 100; updated = true; }
+
+    if (checkTouchArea(tx, ty, 10, 140, 50, 40)) { configHealth = 50; updated = true; }
+    if (checkTouchArea(tx, ty, 70, 140, 50, 40)) { configHealth = 100; updated = true; }
+    if (checkTouchArea(tx, ty, 130, 140, 50, 40)) { configHealth = 150; updated = true; }
+    if (checkTouchArea(tx, ty, 190, 140, 50, 40)) { configHealth = 200; updated = true; }
+    if (updated) drawSetupScreen2();
+  }
+  else if (currentScreen == 3) { // ROSTER
+    if (checkTouchArea(tx, ty, 240, 35, 70, 30)) { currentScreen = 0; drawMainScreen(); return; } 
+    if (checkTouchArea(tx, ty, 240, 70, 70, 30)) { handleClearScores(); return; } 
+
+    // Check taps on player boxes to change teams
+    int count = 0;
+    for(int i = 0; i < MAX_PLAYERS; i++) {
+      if(players[i].active) {
+        if (count >= 12) break; 
+        int row = count / 3;
+        int col = count % 3;
+        int bx = 10 + (col * (65 + 10));
+        int by = 40 + (row * (40 + 10));
+        
+        if (checkTouchArea(tx, ty, bx, by, 65, 40)) {
+          players[i].team++;
+          if (players[i].team > 4) players[i].team = 1;
+          drawRosterScreen();
+          return;
+        }
+        count++;
+      }
+    }
+  }
+}
+
+void loop() {
+  dnsServer.processNextRequest(); 
+  server.handleClient(); 
+
+  // Read Touch Panel
+  if (ts.tirqTouched() && ts.touched()) {
+    TS_Point p = ts.getPoint();
+    // Standard XPT2046 mapping for Rotation 1
+    int mapX = map(p.x, 300, 3800, 0, 320);
+    int mapY = map(p.y, 300, 3800, 0, 240);
+    processTouch(mapX, mapY);
+    delay(250); // Debounce
+  }
+
+  // Update Main Menu Live Timer
+  if (currentScreen == 0 && hostStatus == 1) {
+    if (millis() - lastTimerUpdate >= 1000) {
+      lastTimerUpdate = millis();
+      unsigned long el = (millis() - gameStartTime) / 1000;
+      char buf[10]; sprintf(buf, "%d:%02d", (int)(el/60), (int)(el%60));
+      tft.fillRoundRect(65, 45, 190, 50, 5, tft.color565(30, 30, 40));
+      tft.setTextColor(C_BLUE);
+      tft.setTextSize(5);
+      tft.setCursor(95, 50);
+      tft.print(buf);
+    }
+  }
+}
