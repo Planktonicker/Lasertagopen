@@ -67,6 +67,7 @@ How to Start a Match
 
 (Optional) Power the Router: If playing a massive game, plug in your dedicated LaserArena Wi-Fi router. (Do not plug it into the internet).
 Boot the CYD Server: Plug the CYD into a USB power bank. It will search for the router for 10 seconds.
+
 If it finds it, it joins and shows a green [LA] tag.
 If not, it creates its own Wi-Fi bubble and shows a yellow [LAH] tag.
 
