@@ -4,6 +4,8 @@ Welcome to Open Laser Tag, a fully open-source, highly scalable, and professiona
 
 This project allows you to build custom laser tag blasters with OLED HUDs, tactile controls, and massive outdoor range, all tied together by a central "Cheap Yellow Display" (CYD) touch server that hosts a live, cyberpunk-themed web dashboard for up to 64 players.
 
+The original intent was to create an easy to setup lasertag game to undercut vendors who charge exhorbitant prices for a game. This hopefullt allows more educator such as myself to have access to easily available laser tag.
+
 ✨ Key Features
 
 Massive Scalability: Play backyard games (up to 10 players) using the CYD's built-in Wi-Fi Hub, or scale up to massive 64-player arena matches using a standard, offline Wi-Fi router.
@@ -116,4 +118,8 @@ On the Web App: The Game Master taps the player's row on their smartphone dashbo
 
 📜 License
 
-Open Laser Tag is open-source. Build, modify, and dominate the arena!
+lasertagopen is open-source and licensed under the [GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3].
+If you wish to use this project in a closed-source or proprietary
+commercial product, please contact chengxinze96@gmail,com for a commercial license.
+Build, modify, and dominate the arena!
