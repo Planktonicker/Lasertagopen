@@ -87,6 +87,10 @@ On the Gun: The player turns the rotary encoder while in the lobby.
 On the CYD: The Game Master taps the player's ID on the physical CYD Scoreboard tab.
 On the Web App: The Game Master taps the player's row on their smartphone dashboard.
 
+3D prints
+
+Included the F3D files in case you want to edit, the main body hosues all the goods, the extention helps to convert it into a full tagger with grip and nerf stock adapter.
+
 📜 License
 
 lasertagopen is open-source and licensed under the [GNU AFFERO GENERAL PUBLIC LICENSE
