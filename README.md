@@ -89,7 +89,7 @@ On the Web App: The Game Master taps the player's row on their smartphone dashbo
 
 3D prints
 
-Included the F3D files in case you want to edit, the main body hosues all the goods, the extention helps to convert it into a full tagger with grip and nerf stock adapter.
+Included the F3D files in case you want to edit, the main body hosues all the goods, the extention helps to convert it into a full tagger with grip and nerf stock adapter. Do note you need 3 IR receiver fore this build, feel free to add or remove to your needs. wire them in parrallel
 
 📜 License
 
