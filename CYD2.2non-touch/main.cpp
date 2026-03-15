@@ -1,4 +1,3 @@
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -242,6 +241,7 @@ void handleRoot() {
   html += "<div><label>HEALTH (HP)</label><input type='number' name='hp' value='"+String(configHealth)+"'></div>";
   html += "<div><label>DAMAGE</label><input type='number' name='dmg' value='"+String(baseDamage)+"'></div>";
   html += "<div><label>LIVES</label><input type='number' name='lvs' value='"+String(configLives)+"'></div>";
+  html += "<div><label>MAGS</label><input type='number' name='mags' value='"+String(configMags)+"'></div>";
   html += "</div><button type='submit' style='margin-top:25px; background:#0ff; color:#000;'>SYNC DIRECTIVES</button></form></div></body></html>";
   
   server.send(200, "text/html", html);
