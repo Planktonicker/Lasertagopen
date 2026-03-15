@@ -27,8 +27,8 @@ Audio: Passive Piezo Buzzer (5V)
 
 IR Optics:
 
-Transmitter: TSAL6100 (940nm 5mm LED) + 2N2222 Transistor + 20Ω Resistor
-Receiver: TSOP38238 (38kHz)
+Transmitter: TSAL6100 (940nm 5mm LED) + 2N2222 Transistor + 20Ω Resistor and 1000ohm resistor
+Receiver: TSOP38238 (38kHz) x 3
 Lens: 20mm Plano-Convex Lens (Mounted exactly ~21.7mm from the IR LED die)
 
 Power: 18650 Battery + V8 Battery Shield (1-way) + Master Toggle Switch
