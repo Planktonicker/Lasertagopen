@@ -1,3 +1,5 @@
+There is an error with the PCB wiring for the battery, please do not use the PCB design, or edit it
+
 🔫 Open Laser Tag (ESP32 Arena System)
 
 Welcome to Open Laser Tag, a fully open-source, highly scalable, and professional-grade laser tag system built on the ESP32 platform.
